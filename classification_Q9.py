@@ -95,11 +95,12 @@ def evaluate_model(model, dataloader, device):
     for batch in dataloader:
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
-        output = model(input_ids=input_ids, attention_mask=attention_mask)
+        labels = batch['labels'].to(device)
+        output = model(input_ids=input_ids, attention_mask=attention_mask, labels = labels.view(-1,1))
 
-        predictions = output.logits.to(device)
+        predictions = torch.reshape(output.logits.to(device), (output.logits.size(0), -1))
         predictions = torch.argmax(predictions, dim=1)
-        dev_accuracy.add_batch(predictions=predictions, references=batch['labels'])
+        dev_accuracy.add_batch(predictions=predictions, references=labels)
 
     # compute and return metrics
     return dev_accuracy.compute()
@@ -162,28 +163,25 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, device, 
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
-            # labels = labels.view(labels.shape[0], 1)
-            output = mymodel(input_ids=input_ids, attention_mask=attention_mask)
+            # labels = 
+            # output = mymodel(input_ids=input_ids, attention_mask=attention_mask)
             # print(labels.shape)
-            # output = mymodel(input_ids=input_ids, labels = labels)
-            predictions = output.logits.to(device)
-            # print(torch.squeeze(predictions).shape)
-            # model_loss = loss(torch.squeeze(predictions),  batch['labels'].to(device))
-            model_loss = loss(predictions,  labels)
+            output = mymodel(input_ids=input_ids, attention_mask = attention_mask, labels = labels.view(-1, 1))
+            output_logits = torch.reshape(output.logits, (output.logits.size(0), -1))
+            model_loss = output.loss
             model_loss.backward()
             optimizer.step()
             lr_scheduler.step()
 
-            predictions = torch.argmax(predictions, dim=1)
+            predictions = torch.argmax(output_logits, dim=1)
 
             optimizer.zero_grad()
             # update metrics
-            train_accuracy.add_batch(predictions=predictions,  references = batch['labels'].to(device))
-            # train_accuracy.add_batch(predictions=torch.squeeze(predictions),  references = batch['labels'].to(device))
+            train_accuracy.add_batch(predictions=predictions,  references = labels)
 
         # print evaluation metrics
         print(f" ===> Epoch {epoch + 1}")
-        acc_val = train_accuracy.compute()
+        acc_val =train_accuracy.compute()
         print(f" - Average training metrics: accuracy={acc_val}")
         ## result
         train_accuracies_store.append(acc_val)
@@ -244,8 +242,7 @@ def t5_pre_process(model_name, batch_size, device, small_subset):
     max_len = 128
 
     print("Loading the tokenizer...")
-    mytokenizer = AutoTokenizer.from_pretrained(model_name)
-    # mytokenizer = T5Tokenizer.from_pretrained(model_name)
+    mytokenizer = T5Tokenizer.from_pretrained(model_name)
 
     print("Loding the data into DS...")
     train_dataset = BoolQADataset(
@@ -277,8 +274,7 @@ def t5_pre_process(model_name, batch_size, device, small_subset):
 
     # from Hugging Face (transformers), read their documentation to do this.
     print("Loading the model ...")
-    pretrained_model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
-    # pretrained_model = T5ForConditionalGeneration.from_pretrained(model_name, num_labels=2)
+    pretrained_model = T5ForConditionalGeneration.from_pretrained(model_name, num_labels=2)
 
     print("Moving model to device ..." + str(device))
     pretrained_model.to(device)
@@ -358,9 +354,9 @@ def experiment(model_name, train_dataloader, validation_dataloader, device):
     best_model = None
     for epoch in [5, 7, 9]:
         for lr in [1e-4, 5e-4, 1e-3]:
-            # model = T5ForConditionalGeneration.from_pretrained(model_name, num_labels = 2)
+            model = T5ForConditionalGeneration.from_pretrained(model_name, num_labels = 2)
 
-            model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
+            # model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
             model.to(device)
             model.name = model_name
             best_dev_acc = train(model, epoch, train_dataloader, validation_dataloader, device, lr)
@@ -368,7 +364,7 @@ def experiment(model_name, train_dataloader, validation_dataloader, device):
                 print(f" -> Revising the best accuracy on dev from {best_selected_acc} to {best_dev_acc} ")
                 best_selected_acc = best_dev_acc
                 best_selected_params = [epoch, lr]
-                torch.save(model, "best_model " + model_name + " .pth")
+                torch.save(model, "best_model" + model_name +".pth")
     
     return best_selected_params, best_selected_acc
 
@@ -389,14 +385,14 @@ if __name__ == "__main__":
     assert type(args.small_subset) == bool, "small_subset must be a boolean"
 
     # load the data and models
-    pretrained_model, train_dataloader, validation_dataloader, test_dataloader = pre_process(args.model,
-                                                                                             args.batch_size,
-                                                                                             args.device,
-                                                                                             args.small_subset)
-    # pretrained_model, train_dataloader, validation_dataloader, test_dataloader = t5_pre_process(args.model,
+    # pretrained_model, train_dataloader, validation_dataloader, test_dataloader = pre_process(args.model,
     #                                                                                          args.batch_size,
     #                                                                                          args.device,
     #                                                                                          args.small_subset)
+    pretrained_model, train_dataloader, validation_dataloader, test_dataloader = t5_pre_process(args.model,
+                                                                                             args.batch_size,
+                                                                                             args.device,
+                                                                                             args.small_subset)
     print(" >>>>>>>>  Starting training ... ")
     ## added
     n_epoch = args.num_epochs
@@ -407,7 +403,7 @@ if __name__ == "__main__":
     best_selected_params, best_selected_acc = experiment(args.model, train_dataloader, validation_dataloader, dvice)
     # print the GPU memory usage just to make sure things are alright
     print_gpu_memory()
-    best_model = torch.load("best_model " + args.model + " .pth")
+    best_model = torch.load("best_model" + args.model +".pth")
 
     val_accuracy = evaluate_model(best_model, validation_dataloader, dvice)
     print(f" - Average DEV metrics: accuracy={val_accuracy}")
@@ -415,6 +411,6 @@ if __name__ == "__main__":
     test_accuracy = evaluate_model(best_model, test_dataloader, dvice )
     print(f" - Average TEST metrics: accuracy={test_accuracy}")
 
-    # print(f" - Best Parameters Combo: {best_selected_params}")
+    print(f" - Best Parameters Combo: {best_selected_params}")
 
     
