@@ -95,11 +95,12 @@ def evaluate_model(model, dataloader, device):
     for batch in dataloader:
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
-        output = model(input_ids=input_ids, attention_mask=attention_mask)
+        labels = batch['labels'].to(device)
+        output = model(input_ids=input_ids, attention_mask=attention_mask, labels = labels.view(-1,1))
 
-        predictions = output.logits.to(device)
+        predictions = torch.reshape(output.logits.to(device), (output.logits.size(0), -1))
         predictions = torch.argmax(predictions, dim=1)
-        dev_accuracy.add_batch(predictions=predictions, references=batch['labels'])
+        dev_accuracy.add_batch(predictions=predictions, references=labels)
 
     # compute and return metrics
     return dev_accuracy.compute()
@@ -162,22 +163,21 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, device, 
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
-            labels = labels.view(labels.shape[0], 1)
+            # labels = 
             # output = mymodel(input_ids=input_ids, attention_mask=attention_mask)
             # print(labels.shape)
-            output = mymodel(input_ids=input_ids, labels = labels)
-            predictions = output.logits.to(device)
-            print(torch.squeeze(predictions).shape)
-            model_loss = loss(torch.squeeze(predictions),  batch['labels'].to(device))
+            output = mymodel(input_ids=input_ids, attention_mask = attention_mask, labels = labels.view(-1, 1))
+            output_logits = torch.reshape(output.logits, (output.logits.size(0), -1))
+            model_loss = output.loss
             model_loss.backward()
             optimizer.step()
             lr_scheduler.step()
 
-            predictions = torch.argmax(predictions, dim=1)
+            predictions = torch.argmax(output_logits, dim=1)
 
             optimizer.zero_grad()
             # update metrics
-            train_accuracy.add_batch(predictions=torch.squeeze(predictions),  references = batch['labels'].to(device))
+            train_accuracy.add_batch(predictions=predictions,  references = labels)
 
         # print evaluation metrics
         print(f" ===> Epoch {epoch + 1}")
@@ -364,7 +364,7 @@ def experiment(model_name, train_dataloader, validation_dataloader, device):
                 print(f" -> Revising the best accuracy on dev from {best_selected_acc} to {best_dev_acc} ")
                 best_selected_acc = best_dev_acc
                 best_selected_params = [epoch, lr]
-                torch.save(model, "best_model.pth")
+                torch.save(model, "best_model" + model_name +".pth")
     
     return best_selected_params, best_selected_acc
 
@@ -403,12 +403,12 @@ if __name__ == "__main__":
     best_selected_params, best_selected_acc = experiment(args.model, train_dataloader, validation_dataloader, dvice)
     # print the GPU memory usage just to make sure things are alright
     print_gpu_memory()
-    best_model = torch.load("best_model.pth")
+    best_model = torch.load("best_model" + args.model +".pth")
 
-    val_accuracy = evaluate_model(pretrained_model, validation_dataloader, dvice)
+    val_accuracy = evaluate_model(best_model, validation_dataloader, dvice)
     print(f" - Average DEV metrics: accuracy={val_accuracy}")
 
-    test_accuracy = evaluate_model(pretrained_model, test_dataloader, dvice )
+    test_accuracy = evaluate_model(best_model, test_dataloader, dvice )
     print(f" - Average TEST metrics: accuracy={test_accuracy}")
 
     print(f" - Best Parameters Combo: {best_selected_params}")
